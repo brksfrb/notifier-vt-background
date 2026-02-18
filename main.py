@@ -83,7 +83,8 @@ VT_MAX_POLLS     = 36   # 36 × 10s = 6 minutes max
 
 app = FastAPI()
 limiter = Limiter(key_func=get_remote_address)
-
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
