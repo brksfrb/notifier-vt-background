@@ -16,6 +16,8 @@ from google.oauth2 import service_account
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 
 # ── Env loading ───────────────────────────────────────────────────────────────
@@ -36,7 +38,7 @@ def load_env_from_file(filepath: str):
             value = value.strip()
             if not os.environ.get(key):
                 os.environ[key] = value
-                print(f"[INFO] Loaded from env.txt: {key}")
+                print(f"[INFO] Loaded from env.txt.")
 
 
 DESKTOP_ENV_FILE = os.path.join(os.path.expanduser("~"), "Desktop", "env.txt")
@@ -82,9 +84,8 @@ VT_POLL_INTERVAL = 10   # seconds
 VT_MAX_POLLS     = 36   # 36 × 10s = 6 minutes max
 
 app = FastAPI()
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=get_remote_address, default_limits=["50/minute"])
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -138,9 +139,18 @@ async def verify_integrity_token(token: str) -> bool:
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Çok fazla istek gönderildi. Lütfen biraz bekleyin."}
+    )
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
 @app.post("/scan")
 @limiter.limit("5/minute")
 async def scan_file(
+    request: Request,
     file: UploadFile = File(...),
     x_integrity_token: str = Header(default=None)
 ):
