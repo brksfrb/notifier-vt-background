@@ -1,10 +1,12 @@
+import os
+
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import uvicorn
 
 # ---------------- CONFIG ----------------
-VT_API_KEY = "YOUR_VIRUSTOTAL_API_KEY"  # <--- KEEP SECRET, DO NOT COMMIT
+VT_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY")
 VT_UPLOAD_URL = "https://www.virustotal.com/api/v3/files"
 VT_ANALYSIS_URL = "https://www.virustotal.com/api/v3/analyses/{}"
 ALLOWED_ORIGINS = ["*"]  # Replace with your app's domain in production
