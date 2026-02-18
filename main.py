@@ -13,6 +13,10 @@ from fastapi.responses import StreamingResponse
 import google.auth.transport.requests
 from google.oauth2 import service_account
 
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 
 # ── Env loading ───────────────────────────────────────────────────────────────
 
@@ -78,6 +82,7 @@ VT_POLL_INTERVAL = 10   # seconds
 VT_MAX_POLLS     = 36   # 36 × 10s = 6 minutes max
 
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -133,6 +138,7 @@ async def verify_integrity_token(token: str) -> bool:
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @app.post("/scan")
+@limiter.limit("5/minute")
 async def scan_file(
     file: UploadFile = File(...),
     x_integrity_token: str = Header(default=None)

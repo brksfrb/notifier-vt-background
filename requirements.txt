@@ -5,3 +5,4 @@ python-multipart
 cloudinary
 httpx
 google-auth
+slowapi
