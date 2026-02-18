@@ -36,6 +36,8 @@ async def scan_file(file: UploadFile = File(...)):
     files = {"file": (file.filename, file_bytes)}
     vt_resp = requests.post("https://www.virustotal.com/api/v3/files", headers=HEADERS, files=files)
     if vt_resp.status_code != 200:
+        print(vt_resp.status_code)
+        print(vt_resp.text)
         raise HTTPException(status_code=500, detail="VirusTotal upload failed")
     analysis_id = vt_resp.json()["data"]["id"]
 
