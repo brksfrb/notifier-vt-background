@@ -3,11 +3,13 @@ import hashlib
 import asyncio
 import json
 import uuid
+import tempfile
 from io import BytesIO
 
 import cloudinary
 import cloudinary.uploader
 import httpx
+import pdfplumber
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.responses import StreamingResponse
 import google.auth.transport.requests
@@ -18,6 +20,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from extract_schedule import extract_schedule
 
 
 # ── Env loading ───────────────────────────────────────────────────────────────
@@ -53,7 +57,6 @@ CLOUDINARY_API_SECRET       = os.environ.get("CLOUDINARY_API_SECRET")
 GOOGLE_CLOUD_PROJECT_NUMBER = os.environ.get("GOOGLE_CLOUD_PROJECT_NUMBER")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-# REQUIRE_INTEGRITY=false during local dev, true in production on Render
 REQUIRE_INTEGRITY = True
 
 missing = [k for k, v in {
@@ -65,7 +68,6 @@ missing = [k for k, v in {
     "GOOGLE_SERVICE_ACCOUNT_JSON": GOOGLE_SERVICE_ACCOUNT_JSON,
 }.items() if not v]
 
-# Only require service account JSON if integrity is enabled
 if REQUIRE_INTEGRITY and not GOOGLE_SERVICE_ACCOUNT_JSON:
     missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
 
@@ -80,8 +82,8 @@ cloudinary.config(
 
 VT_HEADERS       = {"x-apikey": VT_API_KEY}
 VT_BASE_URL      = "https://www.virustotal.com/api/v3"
-VT_POLL_INTERVAL = 10   # seconds
-VT_MAX_POLLS     = 36   # 36 × 10s = 6 minutes max
+VT_POLL_INTERVAL = 10
+VT_MAX_POLLS     = 36
 
 app = FastAPI()
 limiter = Limiter(key_func=get_remote_address, default_limits=["50/minute"])
@@ -122,8 +124,8 @@ async def verify_integrity_token(token: str) -> bool:
             print(f"[WARN] Integrity verify failed: {resp.status_code} - {resp.text}")
             return False
 
-        verdict       = resp.json().get("tokenPayloadExternal", {})
-        app_integrity = verdict.get("appIntegrity", {})
+        verdict          = resp.json().get("tokenPayloadExternal", {})
+        app_integrity    = verdict.get("appIntegrity", {})
         device_integrity = verdict.get("deviceIntegrity", {})
 
         app_ok    = app_integrity.get("appRecognitionVerdict") == "PLAY_RECOGNIZED"
@@ -137,7 +139,7 @@ async def verify_integrity_token(token: str) -> bool:
         return False
 
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+# ── Exception handlers ────────────────────────────────────────────────────────
 
 async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
@@ -147,6 +149,8 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
 
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
 @app.get("/ping")
 @app.head("/ping")
 @limiter.limit("5/minute")
@@ -155,6 +159,7 @@ async def ping(request: Request):
         status_code=200,
         content={"detail": "pong!", "status": "ok"}
     )
+
 
 @app.post("/scan")
 @limiter.limit("5/minute")
@@ -182,19 +187,17 @@ async def scan_file(
     async def event_stream():
         async with httpx.AsyncClient(timeout=60.0) as client:
 
-            # ── Step 1: Received ──────────────────────────────────────────────
             yield sse_event("status", {
                 "step": "received",
                 "message": f"Dosya alındı, tarama başlatılıyor..."
             })
 
-            sha256       = get_sha256(file_bytes)
-            analysis_id  = None
-            stats        = None
+            sha256      = get_sha256(file_bytes)
+            analysis_id = None
+            stats       = None
 
             print(f"[INFO] SHA-256: {sha256}")
 
-            # ── Step 2: Hash cache check ──────────────────────────────────────
             existing_resp = await client.get(
                 f"{VT_BASE_URL}/files/{sha256}",
                 headers=VT_HEADERS
@@ -209,7 +212,6 @@ async def scan_file(
                 stats = existing_resp.json()["data"]["attributes"].get("last_analysis_stats")
 
             else:
-                # ── Step 3: Upload to VT ──────────────────────────────────────
                 yield sse_event("status", {
                     "step": "vt_uploading",
                     "message": "Dosya VirusTotal'e yükleniyor..."
@@ -222,7 +224,6 @@ async def scan_file(
                 )
 
                 if vt_resp.status_code == 409:
-                    # Conflict — file known but upload conflicted, retry hash lookup
                     print(f"[WARN] VT 409 conflict, retrying hash lookup...")
                     yield sse_event("status", {
                         "step": "vt_conflict",
@@ -254,7 +255,6 @@ async def scan_file(
                     analysis_id = vt_resp.json()["data"]["id"]
                     print(f"[INFO] Analysis ID: {analysis_id}")
 
-            # ── Step 4: Poll for results ──────────────────────────────────────
             if analysis_id and not stats:
                 yield sse_event("status", {
                     "step": "vt_scanning",
@@ -290,7 +290,6 @@ async def scan_file(
                         timed_out = False
                         break
 
-                    # If stuck queued after 3 attempts, try hash lookup
                     if vt_status == "queued" and attempt >= 3:
                         print(f"[INFO] Stuck in queue, trying hash lookup...")
                         fallback = await client.get(
@@ -313,7 +312,6 @@ async def scan_file(
                     })
                     return
 
-            # ── Step 5: Evaluate ──────────────────────────────────────────────
             print(f"[INFO] VT stats: {stats}")
 
             if not stats:
@@ -338,16 +336,14 @@ async def scan_file(
                 "stats": stats
             })
 
-            # ── Step 6: Upload to Cloudinary ──────────────────────────────────
             file_stream = BytesIO(file_bytes)
             file_stream.seek(0)
 
-            # Unique public_id to prevent collisions
             unique_id = uuid.uuid4().hex
             public_id = f"bug_reports/{unique_id}/{filename}"
 
             try:
-                loop = asyncio.get_running_loop()  # fixed: get_event_loop is deprecated
+                loop = asyncio.get_running_loop()
                 cloud_resp = await loop.run_in_executor(
                     None,
                     lambda: cloudinary.uploader.upload(
@@ -367,7 +363,6 @@ async def scan_file(
             cloud_url = cloud_resp.get("secure_url")
             print(f"[INFO] Cloudinary upload successful: {cloud_url}")
 
-            # ── Step 7: Done ──────────────────────────────────────────────────
             yield sse_event("done", {
                 "step": "complete",
                 "message": "Dosya başarıyla tarandı ve yüklendi.",
@@ -377,3 +372,54 @@ async def scan_file(
             })
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/extract_schedule")
+@limiter.limit("10/minute")
+async def extract_schedule_endpoint(
+    request: Request,
+    file: UploadFile = File(...),
+    x_integrity_token: str = Header(default=None)
+):
+    # ── Integrity check ───────────────────────────────────────────────────────
+    if REQUIRE_INTEGRITY:
+        if not x_integrity_token:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        if not await verify_integrity_token(x_integrity_token):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # ── Validate file type ────────────────────────────────────────────────────
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    # ── Read file ─────────────────────────────────────────────────────────────
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    print(f"[INFO] extract_schedule: {file.filename} ({len(file_bytes)} bytes)")
+
+    # ── Parse — write to a temp file so pdfplumber can seek ──────────────────
+    try:
+        loop = asyncio.get_running_loop()
+
+        def _parse():
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            try:
+                return extract_schedule(tmp_path)
+            finally:
+                os.unlink(tmp_path)
+
+        result = await loop.run_in_executor(None, _parse)
+
+    except Exception as e:
+        print(f"[ERROR] extract_schedule failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to parse PDF")
+
+    # ── Return ────────────────────────────────────────────────────────────────
+    if not result.get("ok"):
+        raise HTTPException(status_code=422, detail=result.get("error", "Parse error"))
+
+    return JSONResponse(content=result)
