@@ -85,7 +85,11 @@ VT_BASE_URL      = "https://www.virustotal.com/api/v3"
 VT_POLL_INTERVAL = 10
 VT_MAX_POLLS     = 36
 
-app = FastAPI()
+app = FastAPI(
+    docs_url=None,
+    openapi_url=None,
+    redoc_url=None
+)
 limiter = Limiter(key_func=get_remote_address, default_limits=["50/minute"])
 app.state.limiter = limiter
 
