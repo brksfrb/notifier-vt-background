@@ -147,6 +147,14 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
 
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
+@app.get("/ping")
+@limiter.limit("5/minute")
+async def ping(request: Request):
+    return JSONResponse(
+        status_code=200,
+        content={"detail": "pong!"}
+    )
+
 @app.post("/scan")
 @limiter.limit("5/minute")
 async def scan_file(
