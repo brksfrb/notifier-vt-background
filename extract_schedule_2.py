@@ -126,7 +126,7 @@ def _is_schedule_table(table: list) -> bool:
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
-def extract_schedule(path: str) -> dict:
+def extract_format_2(path: str) -> dict:
     teachers = []
     global_hours: list[str] = []
 
@@ -195,6 +195,6 @@ def extract_schedule(path: str) -> dict:
 
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "program2.pdf"
-    result = extract_schedule(path)
+    path = sys.argv[1] if len(sys.argv) > 1 else "program.pdf"
+    result = extract_format_2(path)
     print(json.dumps(result, ensure_ascii=False, indent=2))

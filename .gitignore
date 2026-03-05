@@ -4,4 +4,6 @@ __pycache__/
 .env
 *.sqlite3
 run.py
+tester.py
 *.pdf
+*.json

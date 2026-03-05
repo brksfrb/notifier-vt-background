@@ -21,7 +21,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from extract_schedule import extract_schedule
+from extract_manager import extract_schedule
 
 
 # ── Env loading ───────────────────────────────────────────────────────────────
