@@ -18,7 +18,7 @@ import os
 import json
 import requests
 
-PDF_PATH  = sys.argv[1] if len(sys.argv) > 1 else "program5.pdf"
+PDF_PATH  = sys.argv[1] if len(sys.argv) > 1 else "program2.pdf"
 BASE_URL  = sys.argv[2] if len(sys.argv) > 2 else "http://localhost:8000"
 TOKEN     = os.environ.get("X_INTEGRITY_TOKEN")  # optional
 
@@ -68,5 +68,6 @@ for t in data["teachers"]:
     print()
 
 print("Full JSON saved to: extract_schedule_result.json")
+print(data)
 with open("extract_schedule_result.json", "w", encoding="utf-8") as out:
     json.dump(data, out, ensure_ascii=False, indent=2)

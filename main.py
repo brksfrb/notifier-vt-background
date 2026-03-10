@@ -21,8 +21,18 @@ from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from firebase_admin import app_check
+
 from extract_manager import extract_schedule
 
+async def verify_apple_app_check_token(token: str) -> bool:
+    try:
+        claims = app_check.verify_token(token)
+        # If no exception, token is valid
+        return True
+    except Exception as e:
+        print(f"[ERROR] App Check verification failed: {e}")
+        return False
 
 # ── Env loading ───────────────────────────────────────────────────────────────
 
@@ -58,6 +68,8 @@ GOOGLE_CLOUD_PROJECT_NUMBER = os.environ.get("GOOGLE_CLOUD_PROJECT_NUMBER")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 
 REQUIRE_INTEGRITY = True
+
+MAX_FILE_SIZE = 10 * 1024 * 1024 # 10 MBS
 
 missing = [k for k, v in {
     "VIRUSTOTAL_API_KEY":           VT_API_KEY,
@@ -176,11 +188,13 @@ async def scan_file(
     if REQUIRE_INTEGRITY:
         if not x_integrity_token:
             raise HTTPException(status_code=401, detail="Unauthorized")
-        if not await verify_integrity_token(x_integrity_token):
+        if not (await verify_integrity_token(x_integrity_token) or await verify_apple_app_check_token(x_integrity_token)):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     # ── Read file ─────────────────────────────────────────────────────────────
     file_bytes = await file.read()
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(413, "File too large")
     filename   = file.filename
 
     if not file_bytes:
@@ -379,7 +393,7 @@ async def scan_file(
 
 
 @app.post("/extract_schedule")
-@limiter.limit("10/minute")
+@limiter.limit("15/minute")
 async def extract_schedule_endpoint(
     request: Request,
     file: UploadFile = File(...),
@@ -389,7 +403,7 @@ async def extract_schedule_endpoint(
     if REQUIRE_INTEGRITY:
         if not x_integrity_token:
             raise HTTPException(status_code=401, detail="Unauthorized")
-        if not await verify_integrity_token(x_integrity_token):
+        if not (await verify_integrity_token(x_integrity_token) or await verify_apple_app_check_token(x_integrity_token)):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     # ── Validate file type ────────────────────────────────────────────────────
@@ -398,6 +412,8 @@ async def extract_schedule_endpoint(
 
     # ── Read file ─────────────────────────────────────────────────────────────
     file_bytes = await file.read()
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(413, "File too large")
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
